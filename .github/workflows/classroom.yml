@@ -1,0 +1,104 @@
+name: Autograding Tests
+on: 
+  push:
+    # paths-ignore:
+    #   - '.github/**'
+env:
+  IMG_URL_RISCV64: https://github.com/Azure-stars/testsuits-for-oskernel/releases/download/v0.1/sdcard-riscv64.img.gz # 镜像url
+  IMG_URL_LOONGARCH64: https://github.com/Azure-stars/testsuits-for-oskernel/releases/download/v0.1/sdcard-loongarch64.img.gz # 镜像url
+  TIMEOUT: 300 # 超时时间
+  SCRIPT_REPO: https://github.com/oscontent25/EvaluationScript # 脚本仓库
+ 
+jobs:
+  run-autograding-tests:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+    env:
+      qemu-version: 9.2.1
+    outputs:
+      details: ${{ steps.autogradingbusyboxmusl.outputs.details }}
+      points: ${{ steps.autogradingbusyboxmusl.outputs.points }}
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: nightly-2025-01-18
+          components: rust-src, llvm-tools
+          targets: x86_64-unknown-none, riscv64gc-unknown-none-elf, aarch64-unknown-none, aarch64-unknown-none-softfloat, loongarch64-unknown-none
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo install cargo-binutils
+      - uses: ./.github/workflows/setup-musl
+        with:
+          arch: riscv64
+      - uses: ./.github/workflows/setup-musl
+        with:
+          arch: loongarch64
+      - uses: ./.github/workflows/setup-qemu
+        with:
+          qemu-version: ${{ env.qemu-version }}
+      - name: Build python environment
+        run: sudo apt-get install -y python3 python3-pip
+      - name: build os.bin
+        run: |
+          make all
+      - name: run loongarch tests
+        run: |
+          wget $IMG_URL_LOONGARCH64 -O sdcard-loongarch64.img.gz
+          gunzip sdcard-loongarch64.img.gz
+          qemu-system-loongarch64 -machine virt -kernel kernel-rv -m 2G -nographic -smp 4 -bios default -drive file=sdcard-loongarch64.img,if=none,format=raw,id=x0 \
+                              -device virtio-blk-device,drive=x0,bus=virtio-mmio-bus.0 -no-reboot -device virtio-net-device,netdev=net -netdev user,id=net \
+                              -rtc base=utc \
+                              -drive file=disk.img,if=none,format=raw,id=x1 -device virtio-blk-device,drive=x1,bus=virtio-mmio-bus.1 | tee loongarch_output.txt
+      - name: Download EvaluationScript
+        run: |
+          git clone ${{ env.SCRIPT_REPO }} .github/classroom
+      - name: busyboxglibc-test
+        uses: oscontent25/os-autograding@master
+        id: autogradingbusyboxglibc
+        with:
+          outputfile: loongarch_output.txt
+          scriptPath: ./.github/classroom/busybox-glibc
+          max-score: 54
+      - name: busyboxmusl-test
+        uses: oscontent25/os-autograding@master
+        id: autogradingbusyboxmusl
+        with:
+          outputfile: loongarch_output.txt
+          scriptPath: ./.github/classroom/busybox-musl
+          max-score: 54
+      - name: Autograding Reporter
+        uses: classroom-resources/autograding-grading-reporter@v1
+        env:
+          AUTOGRADINGBUSYBOXGLIBC_RESULTS: "${{steps.autogradingbusyboxglibc.outputs.result}}"
+          AUTOGRADINGBUSYBOXMUSL_RESULTS: "${{steps.autogradingbusyboxmusl.outputs.result}}"
+        with:
+          runners: autogradingbusyboxglibc,autogradingbusyboxmusl
+          token: ${{ secrets.GITHUB_TOKEN }}
+
+  # deploy:
+  #   name: Deploy
+  #   runs-on: ubuntu-latest
+  #   needs: run-autograding-tests
+  #   steps:
+  #     - uses: actions/checkout@v4
+  #     - name: Test Autograding Outputs
+  #       run: |
+  #         echo "${{ needs.build.outputs.details }}"
+  #         echo "here ${{ needs.build.outputs.result }}"
+          
+  #     - run: |
+  #         mkdir autograding_logs
+  #         cd autograding_logs
+  #         echo -ne "${{ needs.build.outputs.details }}\nPoints: ${{ needs.build.outputs.points }}" \
+  #           >> `date +%Y_%m_%d_%H_%M_%S`.txt
+      
+  #     - name: GitHub Pages
+  #       uses: crazy-max/ghaction-github-pages@v3
+  #       with:
+  #         target_branch: gh-pages
+  #         build_dir: autograding_logs
+  #         keep_history: true
+  #       env:
+  #         GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
